@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/subtle"
 	_ "embed"
 	"encoding/json"
@@ -49,7 +50,9 @@ func (s *Server) RunCheckCycle(region string) int {
 	}
 	count := 0
 	for _, m := range monitors {
-		res := checker.RunCheck(rContext(), m, region)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		res := checker.RunCheck(ctx, m, region)
+		cancel()
 		_ = s.store.RecordCheck(res)
 		count++
 	}
