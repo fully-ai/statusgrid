@@ -1,0 +1,10 @@
+bin/
+/statusgrid-server
+/statusgrid-probe
+*.exe
+*.db
+*.db-wal
+*.db-shm
+.env
+data/
+coverage.out

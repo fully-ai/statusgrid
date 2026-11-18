@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>StatusGrid — Distributed Uptime &amp; Incidents</title>
+  <style>
+    body { margin:0; font-family:system-ui, sans-serif; background:#0d1117; color:#e6edf3; padding:20px; max-width:1180px; margin-inline:auto; }
+    .card { background:#161b22; border:1px solid #30363d; border-radius:8px; padding:14px; margin-bottom:14px; }
+    .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(290px,1fr)); gap:12px; margin-bottom:14px; }
+    input, select, button { padding:7px 10px; border-radius:6px; border:1px solid #30363d; background:#21262d; color:#e6edf3; }
+    button { background:#2f81f7; border:none; cursor:pointer; font-weight:600; }
+    button.ghost { background:#21262d; border:1px solid #30363d; }
+    button.sm { padding:4px 8px; font-size:0.78rem; }
+    .pill { padding:2px 8px; border-radius:999px; font-size:0.74rem; font-weight:700; background:#30363d; }
+    .st-up { background:#14532d; color:#bbf7d0; }
+    .st-degraded, .st-maintenance { background:#713f12; color:#fef08a; }
+    .st-down { background:#7f1d1d; color:#fecaca; }
+    svg { width:100%; height:64px; background:#0d1117; border-radius:6px; margin-top:8px; }
+  </style>
+</head>
+<body>
+  <div class="row" style="justify-content:space-between;margin-bottom:12px;">
+    <h1 style="margin:0;">StatusGrid</h1>
+    <div class="row">
+      <input id="adm" type="password" placeholder="Admin Token" />
+      <a href="/status/default" style="color:#58a6ff;">Public Status Page</a>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <input id="m-name" placeholder="Monitor name" />
+      <input id="m-group" value="core" placeholder="Service group" />
+      <select id="m-kind"><option>http</option><option>https</option><option>tcp</option><option>dns</option></select>
+      <input id="m-target" placeholder="https://example.com/health or host:port" style="flex:1;" />
+      <input id="m-region" value="local-primary" placeholder="Region" />
+      <button onclick="addMonitor()">Add Monitor</button>
+    </div>
+  </div>
+
+  <div id="monitors" class="grid"></div>
+
+  <div class="card">
+    <strong>Incidents</strong>
+    <div id="incidents" style="margin-top:8px;"></div>
+  </div>
+
+  <script>
+    function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
+    function admHeaders() { return { 'Content-Type':'application/json', 'X-Admin-Token': document.getElementById('adm').value.trim() }; }
+    function latencyChart(results) {
+      if (!results || !results.length) return '';
+      const arr = [...results].reverse();
+      const max = Math.max(10, ...arr.map(r => r.latency_ms));
+      const pts = arr.map((r, i) => `${(arr.length===1?260:(i/(arr.length-1))*260).toFixed(1)},${(58-(r.latency_ms/max)*50).toFixed(1)}`).join(' ');
+      return `<polyline fill="none" stroke="#38bdf8" stroke-width="2" points="${pts}" />`;
+    }
+    async function addMonitor() {
+      await fetch('/api/monitors', {
+        method:'POST', headers: admHeaders(),
+        body: JSON.stringify({
+          name: document.getElementById('m-name').value.trim(),
+          service_group: document.getElementById('m-group').value.trim(),
+          kind: document.getElementById('m-kind').value,
+          target: document.getElementById('m-target').value.trim(),
+          region: document.getElementById('m-region').value.trim()
+        })
+      });
+      await refresh();
+    }
+    async function runNow(id) { await fetch(`/api/monitors/${encodeURIComponent(id)}/check`, { method:'POST', headers: admHeaders() }); await refresh(); }
+    async function resolveInc(id) {
+      await fetch(`/api/incidents/${encodeURIComponent(id)}/updates`, {
+        method:'POST', headers: admHeaders(),
+        body: JSON.stringify({ state: 'resolved', message: 'Resolved by operator.' })
+      });
+      await refresh();
+    }
+    async function refresh() {
+      const { monitors } = await fetch('/api/monitors').then(r => r.json());
+      const box = document.getElementById('monitors');
+      box.innerHTML = '';
+      for (const m of (monitors || [])) {
+        const st = await fetch(`/api/monitors/${encodeURIComponent(m.id)}/stats`).then(r => r.json());
+        const card = document.createElement('div');
+        card.className = 'card';
+        card.innerHTML = `
+          <div class="row" style="justify-content:space-between;">
+            <strong>${esc(m.name)}</strong>
+            <span class="pill st-${esc(m.current_state)}">${esc(m.current_state)}</span>
+          </div>
+          <small style="color:#8b949e;">${esc(m.kind.toUpperCase())} • ${esc(m.region)} • ${esc(m.service_group)}</small>
+          <div style="margin-top:6px;">Uptime: <b>${st.uptime_percent.toFixed(2)}%</b> • Avg Latency: <b>${st.avg_latency_ms.toFixed(1)} ms</b></div>
+          <svg viewBox="0 0 260 64">${latencyChart(st.recent_results)}</svg>
+          <div style="margin-top:8px;"><button class="ghost sm" onclick="runNow('${esc(m.id)}')">Run Check Now</button></div>
+        `;
+        box.appendChild(card);
+      }
+      const { incidents } = await fetch('/api/incidents').then(r => r.json());
+      document.getElementById('incidents').innerHTML = (incidents || []).map(i => `
+        <div style="border-top:1px solid #30363d;padding:8px 0;">
+          <b>[${esc(i.state)}]</b> ${esc(i.title)} <small style="color:#8b949e;">${esc(i.created_at)}</small>
+          ${i.state !== 'resolved' ? `<button class="ghost sm" onclick="resolveInc('${esc(i.id)}')">Resolve</button>` : ''}
+        </div>
+      `).join('') || '<small style="color:#8b949e;">No incidents recorded.</small>';
+    }
+    refresh();
+    setInterval(refresh, 5000);
+  </script>
+</body>
+</html>
